@@ -1,0 +1,83 @@
+name: ESP-IDF Build, Test, Coverage & Flash with Log Filtering
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          version: v5.3
+
+      - name: Set ESP32-S3 target
+        run: idf.py set-target esp32s3
+
+      - name: Build firmware
+        run: idf.py build
+
+      - name: Run host-side unit tests (TinyUSB/HID mocks)
+        run: |
+          mkdir -p build/test_results
+          ctest --output-on-failure | tee build/test_results/output.txt
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: v5.3
+          fail_ci_if_error: true
+
+      - name: Post/update coverage comment on PR
+        if: github.event_name == 'pull_request'
+        run: .github/scripts/post_or_update_coverage_comment.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
+
+  flash-device:
+    needs: build-test
+    runs-on: [self-hosted, esp32-lab]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          version: v5.3
+
+      - name: Set ESP32-S3 target
+        run: idf.py set-target esp32s3
+
+      - name: Build firmware
+        run: idf.py build
+
+      - name: Flash to ESP32-S3
+        run: idf.py -p /dev/ttyUSB0 flash
+
+      - name: Capture & filter device logs
+        run: |
+          echo "Starting ESP32-S3 log capture..."
+          timeout 20s idf.py -p /dev/ttyUSB0 monitor | tee full_device_log.txt | \
+            grep -E "Inference result|USB mounted|USB not ready|HID" || true
+        continue-on-error: true
+
+      - name: Upload full device logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32-s3-full-logs
+          path: full_device_log.txt
